@@ -7,7 +7,7 @@ import sounddevice as sd
 import numpy as np
 import wavio
 import librosa
-from tensorflow.keras.models import load_model
+import tensorflow as tf
 from tkinter import messagebox
 
 # Define the possible classes and associated problems
@@ -19,23 +19,37 @@ class_labels = {
     4: "Squeaking",
 }
 
-# Function to preprocess user input sound
-def preprocess_sound(file_path):
+# Function to preprocess user input sound using Mel-spectrogram
+def preprocess_sound(file_path, n_mels=128, max_len=216):
     y, sr = librosa.load(file_path, sr=None)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-    mfcc_scaled = np.mean(mfcc.T, axis=0)
-    return mfcc_scaled.reshape(1, mfcc_scaled.shape[0], 1)
+    mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
+    mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
+    mel_spectrogram = pad_or_truncate(mel_spectrogram, n_mels, max_len)
+    return mel_spectrogram.reshape(1, n_mels, max_len, 1).astype(np.float32)
+
+def pad_or_truncate(mel_spectrogram, n_mels, max_len):
+    if mel_spectrogram.shape[1] > max_len:
+        return mel_spectrogram[:, :max_len]
+    elif mel_spectrogram.shape[1] < max_len:
+        pad_width = max_len - mel_spectrogram.shape[1]
+        return np.pad(mel_spectrogram, ((0, 0), (0, pad_width)), mode='constant')
+    else:
+        return mel_spectrogram
 
 # Load trained model
-model_path = 'D:/Download/pdwa-20240720T174257Z-001/pdwa/fcnn_engine_sound_classification_model_finals.h5'
-model = load_model(model_path)
+model_path = 'D:/Download/pdwa-20240720T174257Z-001/pdwa/cnn.h5'
+model = tf.keras.models.load_model(model_path)
+
 
 # Function to predict sound class
 def predict_sound_class(file_path, model):
     preprocessed_sound = preprocess_sound(file_path)
+    print("Preprocessed sound shape:", preprocessed_sound.shape)  # Debugging
+
+
     prediction = model.predict(preprocessed_sound)
     predicted_class = np.argmax(prediction)
-    
+   
     # Retrieve the label and possible problem from the dictionary
     label = class_labels.get(predicted_class, "Unknown")
     return label
