@@ -7,7 +7,7 @@ import sounddevice as sd
 import numpy as np
 import wavio
 import librosa
-import tensorflow as tf
+from tensorflow.keras.models import load_model
 from tkinter import messagebox
 
 # Define the possible classes and associated problems
@@ -19,37 +19,23 @@ class_labels = {
     4: "Squeaking",
 }
 
-# Function to preprocess user input sound using Mel-spectrogram
-def preprocess_sound(file_path, n_mels=128, max_len=216):
+# Function to preprocess user input sound
+def preprocess_sound(file_path):
     y, sr = librosa.load(file_path, sr=None)
-    mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
-    mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
-    mel_spectrogram = pad_or_truncate(mel_spectrogram, n_mels, max_len)
-    return mel_spectrogram.reshape(1, n_mels, max_len, 1).astype(np.float32)
-
-def pad_or_truncate(mel_spectrogram, n_mels, max_len):
-    if mel_spectrogram.shape[1] > max_len:
-        return mel_spectrogram[:, :max_len]
-    elif mel_spectrogram.shape[1] < max_len:
-        pad_width = max_len - mel_spectrogram.shape[1]
-        return np.pad(mel_spectrogram, ((0, 0), (0, pad_width)), mode='constant')
-    else:
-        return mel_spectrogram
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+    mfcc_scaled = np.mean(mfcc.T, axis=0)
+    return mfcc_scaled.reshape(1, mfcc_scaled.shape[0], 1)
 
 # Load trained model
-model_path = 'D:/Download/pdwa-20240720T174257Z-001/pdwa/cnn.h5'
-model = tf.keras.models.load_model(model_path)
-
+model_path = 'D:/Download/pdwa-20240720T174257Z-001/pdwa/fcnn_engine_sound_classification_model_finals.h5'
+model = load_model(model_path)
 
 # Function to predict sound class
 def predict_sound_class(file_path, model):
     preprocessed_sound = preprocess_sound(file_path)
-    print("Preprocessed sound shape:", preprocessed_sound.shape)  # Debugging
-
-
     prediction = model.predict(preprocessed_sound)
     predicted_class = np.argmax(prediction)
-   
+    
     # Retrieve the label and possible problem from the dictionary
     label = class_labels.get(predicted_class, "Unknown")
     return label
@@ -60,7 +46,7 @@ class MainApp:
            top is the toplevel containing window.'''
 
         top.geometry("800x480")
-        top.title("EnginEar")
+        top.title("FAULT FINDER PRO")
         top.resizable(0, 0)
         top.configure(background="#6a7095")
         top.configure(highlightbackground="#d9d9d9")
@@ -214,50 +200,51 @@ class MainPage(tk.Frame):
         self.Listbox2.place(relx=0.028, rely=0.091, relheight=0.841, relwidth=0.944)
         self.Listbox2.configure(background="white")
         self.Listbox2.configure(disabledforeground="#a3a3a3")
-        self.Listbox2.configure(font="-family {Segoe UI} -size 14")
-        self.Listbox2.configure(foreground="black")
+        self.Listbox2.configure(font="TkFixedFont")
+        self.Listbox2.configure(foreground="#000000")
         self.Listbox2.configure(highlightbackground="#d9d9d9")
         self.Listbox2.configure(highlightcolor="#000000")
         self.Listbox2.configure(selectbackground="#c4c4c4")
         self.Listbox2.configure(selectforeground="black")
-        self.Listbox2.bind("<Double-Button-1>", self.on_item_double_click)
+        self.Listbox2.configure(activestyle='none')
+
+    def AddItemListbox2(self, items):
+        for item in items:
+            self.Listbox2.insert(tk.END, item)
 
     def start_recording(self):
-        if not self.is_recording:  # Check if recording is not already in progress
-            self.is_recording = True
-            self.btnRecord.place_forget()  # Hide the record button
-            self.btnStop.place(relx=0.599, rely=0.065, height=196, width=277)  # Show the stop button
+        self.is_recording = True
+        self.recorded_data = []  # Clear previously recorded data
 
-            # Start a new thread for recording
-            self.recording_thread = threading.Thread(target=self._record)
-            self.recording_thread.start()
+        def callback(indata, frames, time, status):
+            if self.is_recording:
+                self.recorded_data.append(indata.copy())
 
-    def _record(self):
-        # Record audio
-        self.recording = sd.rec(int(10 * self.fs), samplerate=self.fs, channels=1, dtype='int16')
-        sd.wait()  # Wait until recording is finished
-
-        # Save the recording to a file
-        wavio.write(self.recording_file_path, self.recording, self.fs, sampwidth=2)
-        self.is_recording = False  # Reset the recording state
+        self.recording = sd.InputStream(callback=callback, channels=1, samplerate=self.fs)
+        self.recording.start()
+        self.btnRecord.place_forget()
+        self.btnStop.place(relx=0.599, rely=0.065, height=196, width=277)
 
     def stop_recording(self):
-        if self.is_recording:  # Check if recording is in progress
+        if self.is_recording:
             self.is_recording = False
-            sd.stop()  # Stop the recording
-            self.btnStop.place_forget()  # Hide the stop button
-            self.btnRecord.place(relx=0.599, rely=0.065, height=196, width=277)  # Show the record button
-            self.btnDiagnose.place(relx=0.599, rely=0.518, height=186, width=277)  # Show the diagnose button
+            self.recording.stop()
+            self.btnStop.place_forget()
+            self.btnDiagnose.place(relx=0.599, rely=0.518, height=186, width=277)
+            self.btnRecord.place(relx=0.599, rely=0.065, height=196, width=277)
+
+            # Convert recorded data to numpy array and save as WAV file
+            recorded_array = np.concatenate(self.recorded_data, axis=0)
+            wavio.write(self.recording_file_path, recorded_array, self.fs, sampwidth=2)
 
     def diagnose_sound(self):
+        # Run sound diagnosis and update information page
         sound_class = predict_sound_class(self.recording_file_path, model)
 
-        # Add the sound class to the listbox (history)
-        self.AddItemListbox2(sound_class)
-
-        # Optionally, navigate to the information page based on the diagnosis
+        # Determine possible problems and recommendations based on the predicted label
         problems = []
         recommendations = []
+
         if sound_class == "Squeaking":
             problems.append(" ")
             recommendations.append("Loose belt")
@@ -277,50 +264,10 @@ class MainPage(tk.Frame):
             problems.append(" ")
             recommendations.append("Ensure you are recording the sound correctly")
 
+        # Update the information page with sound class, problem, and recommendations
         self.controller.update_information_page_text(sound_class, problems, recommendations)
         self.controller.show_information_page()
-
-    def AddItemListbox2(self, item):
-        self.Listbox2.insert(END, item)
-
-    def on_item_double_click(self, event):
-        selected_index = self.Listbox2.curselection()
-        if selected_index:
-            # Get the selected item
-            selected_item = self.Listbox2.get(selected_index)
-            
-            # Split the item to get the sound class
-            sound_class = selected_item.split()[0]
-            
-            # Determine possible problems and recommendations based on the sound class
-            problems = []
-            recommendations = []
-            
-            if sound_class == "Squeaking":
-                problems.append(" ")
-                recommendations.append("Loose belt")
-                recommendations.append("Worn belt")
-            elif sound_class == "Grinding":
-                problems.append(" ")
-                recommendations.append("Water pump")
-                recommendations.append("Alternator bearing")
-            elif sound_class == "Knocking":
-                problems.append(" ")
-                recommendations.append("Fuel injector")
-                recommendations.append("Excessive clearance")
-            elif sound_class == "Normal":
-                problems.append(" ")
-                recommendations.append("No action required")
-            elif sound_class == "Invalid":
-                problems.append(" ")
-                recommendations.append("Ensure you are recording the sound correctly")
-            
-            # Update the information page with sound class, problem, and recommendations
-            self.controller.update_information_page_text(sound_class, problems, recommendations)
-            self.controller.show_information_page()
-
-            # Store the selected index to use it later for deletion
-            self.controller.current_selected_index = selected_index
+        self.AddItemListbox2([f"{sound_class} {''.join(problems)}"])
 
 class InformationPage(tk.Frame):
     def __init__(self, parent, controller):
@@ -346,16 +293,6 @@ class InformationPage(tk.Frame):
         # Add Save Button
         self.save_button = tk.Button(self, text="Save", font=("Arial", 16, "bold"), bg="yellow", fg="black", command=self.save_information)
         self.save_button.place(relx=0.85, rely=0.85, width=100, height=50)
-
-        # Add Delete Button
-        self.delete_button = tk.Button(self, text="Delete", font=("Arial", 16, "bold"), bg="red", fg="white", command=self.delete_item)
-        self.delete_button.place(relx=0.01, rely=0.85, width=100, height=50)
-
-    def delete_item(self):
-        if hasattr(self.controller, 'current_selected_index'):
-            main_page = self.controller.pages["MainPage"]
-            main_page.Listbox2.delete(self.controller.current_selected_index)
-            self.go_back()  # Navigate back to the main dashboard after deletion
 
     def update_label_text(self, sound_class, problems, recommendations):
         # Choose color based on sound class
