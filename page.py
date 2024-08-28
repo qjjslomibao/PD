@@ -8,7 +8,9 @@ import numpy as np
 import wavio
 import librosa
 from tensorflow.keras.models import load_model
+import tensorflow as tf
 from tkinter import messagebox
+import csv
 
 # Define the possible classes and associated problems
 class_labels = {
@@ -19,23 +21,36 @@ class_labels = {
     4: "Squeaking",
 }
 
-# Function to preprocess user input sound
-def preprocess_sound(file_path):
+# Function to preprocess user input sound using Mel-spectrogram
+def preprocess_sound(file_path, n_mels=128, max_len=216):
     y, sr = librosa.load(file_path, sr=None)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-    mfcc_scaled = np.mean(mfcc.T, axis=0)
-    return mfcc_scaled.reshape(1, mfcc_scaled.shape[0], 1)
+    mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
+    mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
+    mel_spectrogram = pad_or_truncate(mel_spectrogram, n_mels, max_len)
+    return mel_spectrogram.reshape(1, n_mels, max_len, 1).astype(np.float32)
+
+def pad_or_truncate(mel_spectrogram, n_mels, max_len):
+    if mel_spectrogram.shape[1] > max_len:
+        return mel_spectrogram[:, :max_len]
+    elif mel_spectrogram.shape[1] < max_len:
+        pad_width = max_len - mel_spectrogram.shape[1]
+        return np.pad(mel_spectrogram, ((0, 0), (0, pad_width)), mode='constant')
+    else:
+        return mel_spectrogram
 
 # Load trained model
-model_path = 'D:/Download/pdwa-20240720T174257Z-001/pdwa/fcnn_engine_sound_classification_model_finals.h5'
-model = load_model(model_path)
+model_path = 'D:\\Download\\pdwa-20240720T174257Z-001\\pdwa\\cnn.keras'
+model = tf.keras.models.load_model(model_path)
+
 
 # Function to predict sound class
 def predict_sound_class(file_path, model):
     preprocessed_sound = preprocess_sound(file_path)
+    print("Preprocessed sound shape:", preprocessed_sound.shape)  # Debugging
+
     prediction = model.predict(preprocessed_sound)
     predicted_class = np.argmax(prediction)
-    
+   
     # Retrieve the label and possible problem from the dictionary
     label = class_labels.get(predicted_class, "Unknown")
     return label
@@ -46,7 +61,7 @@ class MainApp:
            top is the toplevel containing window.'''
 
         top.geometry("800x480")
-        top.title("FAULT FINDER PRO")
+        top.title("EnginEar")
         top.resizable(0, 0)
         top.configure(background="#6a7095")
         top.configure(highlightbackground="#d9d9d9")
@@ -73,6 +88,7 @@ class MainApp:
             page.grid(row=0, column=0, sticky="nsew")
 
         self.show_page("GettingStartedPage")
+        self.load_scan_history()
 
     def show_page(self, page_name):
         page = self.pages[page_name]
@@ -91,6 +107,24 @@ class MainApp:
     def update_list_history(self, items):
         main_page = self.pages["MainPage"]
         main_page.AddItemListbox2(items)
+    def save_scan_history(self):
+        main_page = self.pages["MainPage"]
+        scan_history = main_page.Listbox2.get(0, tk.END)
+
+        with open('scan_history.csv', 'w', newline='') as file:
+            writer = csv.writer(file)
+            for item in scan_history:
+                writer.writerow([item])
+
+    def load_scan_history(self):
+        main_page = self.pages["MainPage"]
+        try:
+            with open('scan_history.csv', 'r') as file:
+                reader = csv.reader(file)
+                for row in reader:
+                    main_page.AddItemListbox2(row)
+        except FileNotFoundError:
+            pass
 
 class GettingStartedPage(tk.Frame):
     def __init__(self, parent, controller):
@@ -100,7 +134,7 @@ class GettingStartedPage(tk.Frame):
         self.Canvas1 = tk.Canvas(self)
         self.Canvas1.place(relx=0.005, rely=0.004, relheight=0.985, relwidth=0.991)
         self.Canvas1.configure(background="#151a24")
-        self.Canvas1.configure(borderwidth="2")
+        self.Canvas1.configure(borderwidth="0")
         self.Canvas1.configure(highlightbackground="#d9d9d9")
         self.Canvas1.configure(highlightcolor="#000000")
         self.Canvas1.configure(relief="ridge")
@@ -110,7 +144,7 @@ class GettingStartedPage(tk.Frame):
         self.Frame1 = tk.Frame(self.Canvas1)
         self.Frame1.place(relx=0.013, rely=0.021, relheight=0.962, relwidth=0.98)
         self.Frame1.configure(relief='groove')
-        self.Frame1.configure(borderwidth="2")
+        self.Frame1.configure(borderwidth="0")
         self.Frame1.configure(background="#151a24")
         self.Frame1.configure(highlightbackground="#d9d9d9")
         self.Frame1.configure(highlightcolor="#000000")
@@ -142,6 +176,8 @@ class MainPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+
+        self.diagnosis_results = {}  # Dictionary to store diagnosis results
 
         self.is_recording = False  # To track the recording state
         self.recording = None  # Store the recording object
@@ -207,14 +243,35 @@ class MainPage(tk.Frame):
         self.Listbox2.configure(selectbackground="#c4c4c4")
         self.Listbox2.configure(selectforeground="black")
         self.Listbox2.configure(activestyle='none')
+        self.Listbox2.bind('<<ListboxSelect>>', self.on_listbox_select)  # Bind event handler
 
     def AddItemListbox2(self, items):
         for item in items:
             self.Listbox2.insert(tk.END, item)
 
+    def on_listbox_select(self, event):
+        selected_index = self.Listbox2.curselection()  # Get the selected index
+        if selected_index:
+            selected_item = self.Listbox2.get(selected_index[0])  # Get the selected item text
+            sound_class = selected_item.split()[0]  # Extract the sound class from the item text
+
+            # Retrieve the problems and recommendations from the stored results
+            if sound_class in self.diagnosis_results:
+                problems, recommendations = self.diagnosis_results[sound_class]
+            else:
+                problems = []
+                recommendations = []
+
+            # Update the information page with the selected sound class, problems, and recommendations
+            self.controller.update_information_page_text(sound_class, problems, recommendations)
+
+            # Show the information page
+            self.controller.show_information_page()
+
     def start_recording(self):
         self.is_recording = True
         self.recorded_data = []  # Clear previously recorded data
+        self.btnDiagnose.configure(state=tk.DISABLED)  # Disable the Diagnose button
 
         def callback(indata, frames, time, status):
             if self.is_recording:
@@ -230,6 +287,7 @@ class MainPage(tk.Frame):
             self.is_recording = False
             self.recording.stop()
             self.btnStop.place_forget()
+            self.btnDiagnose.configure(state=tk.NORMAL)  # Re-enable the Diagnose button
             self.btnDiagnose.place(relx=0.599, rely=0.518, height=186, width=277)
             self.btnRecord.place(relx=0.599, rely=0.065, height=196, width=277)
 
@@ -238,6 +296,9 @@ class MainPage(tk.Frame):
             wavio.write(self.recording_file_path, recorded_array, self.fs, sampwidth=2)
 
     def diagnose_sound(self):
+        # Disable the Diagnose button after it is clicked
+        self.btnDiagnose.configure(state=tk.DISABLED)
+        
         # Run sound diagnosis and update information page
         sound_class = predict_sound_class(self.recording_file_path, model)
 
@@ -264,10 +325,16 @@ class MainPage(tk.Frame):
             problems.append(" ")
             recommendations.append("Ensure you are recording the sound correctly")
 
+        # Save the results in the dictionary with the sound class as the key
+        self.diagnosis_results[sound_class] = (problems, recommendations)
+
         # Update the information page with sound class, problem, and recommendations
         self.controller.update_information_page_text(sound_class, problems, recommendations)
         self.controller.show_information_page()
-        self.AddItemListbox2([f"{sound_class} {''.join(problems)}"])
+
+        # Add the result to the listbox
+        self.AddItemListbox2([sound_class])
+        self.controller.save_scan_history()
 
 class InformationPage(tk.Frame):
     def __init__(self, parent, controller):
@@ -323,4 +390,22 @@ class InformationPage(tk.Frame):
 if __name__ == '__main__':
     root = tk.Tk()
     app = MainApp(root)
+
+    # Full screen functionality
+    def toggle_fullscreen(event=None):
+        state = not root.attributes("-fullscreen")
+        root.attributes("-fullscreen", state)  # Toggle full screen
+        return "break"
+
+    def end_fullscreen(event=None):
+        root.attributes("-fullscreen", False)  # Exit full screen
+        return "break"
+
+    # Bind F11 to toggle full screen and Escape to exit full screen
+    root.bind("<F11>", toggle_fullscreen)
+    root.bind("<Escape>", end_fullscreen)
+
+    # Start the window in full-screen mode
+    root.attributes("-fullscreen", True) 
+
     root.mainloop()
